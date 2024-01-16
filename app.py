@@ -1,30 +1,28 @@
 import tkinter as tk
 import threading
-import time
-import sys
+import os
 import re
 import sqlite3
 from tkinter import messagebox
 import cv2
-import fitz
-import numpy as np
 import pytesseract
 from PIL import Image, ImageTk
 from pytesseract import Output
 import json
+import pyodbc
 
+# Fonksiyonlar
 def load_config(config_file):
     with open(config_file, 'r') as file:
         config = json.load(file)
     return config
-def connectDB(database_path):
-    connectionDB = sqlite3.connect(database_path)
-    return connectionDB.cursor() , connectionDB
+
 def isControlCheck(cursor):
-    selectQuery = "SELECT PDF , Musteri, Tür FROM Fatura WHERE isControl=1"
-    cursor.execute(selectQuery)
+    selectQuery = "SELECT [File] , [Id] , [CompanyId] FROM CompanyDataFiles WHERE IsChecked = ?"
+    cursor.execute(selectQuery, True)
     resultsOfPDF = cursor.fetchall()
     return resultsOfPDF
+"""
 def fileToImages(filePath):
     doc = fitz.open(filePath)
     images = []
@@ -34,15 +32,16 @@ def fileToImages(filePath):
         image = page.get_pixmap(matrix=fitz.Matrix(300/72, 300/72))
         pil_image = Image.frombytes("RGB", [image.width, image.height], image.samples)
         images.append(np.array(pil_image))
-
     return images[0]
+"""
 def preprocess_image(image):
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, thresholded_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     denoised_image = cv2.GaussianBlur(thresholded_image, (5, 5), 0)
     return denoised_image
-def processPDF(filePath):
 
+def processPDF(filePath):
+    # PDF işleme fonksiyonu
     int_number_pattern = r'\b\d+\b'
     number_pattern = r'\b\d{1,3}(?:,\d{3})*(?:\.\d{1,3})?\b'
     date_pattern = r'\b\d{2}\.\d{2}\.\d{4}\b'
@@ -60,12 +59,11 @@ def processPDF(filePath):
     preprocessed_image = preprocess_image(image)
     d = pytesseract.image_to_data(preprocessed_image, output_type=Output.DICT)
 
-
     for i, conf in enumerate(d['conf']):
-        #Current Data is d['text'][i]
+        # Geçerli veri d['text'][i]
 
-        #FATURANIN TARİHİNİN BULUNMASI
-        if conf > 60 and re.match(date_pattern,d['text'][i]) and dateCount <= 0:
+        # FATURANIN TARİHİNİN BULUNMASI
+        if conf > 60 and re.match(date_pattern, d['text'][i]) and dateCount <= 0:
             date = d['text'][i]
             dateCount += 1
             dataArray.append(date)
@@ -76,13 +74,12 @@ def processPDF(filePath):
             dataArray.append(date)
             dataArray.reverse()
 
-        #VERİLERİN BULUNMASI
+        # VERİLERİN BULUNMASI
         if "(M3)" in d['text'][i]:
             (x, y, w, h) = (d['left'][i], d['top'][i], d['width'][i], d['height'][i])
             (xM3,yM3,wM3,hM3) = (x,y,width,h)
 
             for j,conf in enumerate(d['conf']):
-
                 if conf > 60 and (re.match(number_pattern, d['text'][j]) or re.match(int_number_pattern, d['text'][j])):
                     (x, y, w, h) = (d['left'][j], d['top'][j], d['width'][j], d['height'][j])
                     if (yM3 <= y+5 and yM3 >= y-5):
@@ -98,7 +95,7 @@ def processPDF(filePath):
             tüketimVerisi += float(d['text'][i].replace(",", "."))
             dataArray.append(tüketimVerisi)
 
-        if conf > 60 and (re.match(number_pattern, d['text'][i]) or re.match(int_number_pattern, d['text'][i])) and (d['text'][i - 1] == 'Kad' or d['text'][i - 1] == 'Kad.'):
+        if conf > 60 and (re.match(number_pattern, d['text'][i]) or re.match(int_number_pattern, d['text'][i])) and (d['text'][i-1] == 'Kad' or d['text'][i-1] == 'Kad.'):
             tüketimVerisi += float(d['text'][i].replace(",", "."))
             dataArray.append(tüketimVerisi)
 
@@ -107,12 +104,11 @@ def processPDF(filePath):
             dataArray.append(tüketimVerisi)
 
     return dataArray
-def updateDB(cursor, connectionDB, date, tüketimVerisi,result,musteri,faturaTürü):
 
-    if (date == None or tüketimVerisi == None):
-
+def updateDB(cursor, connectionDB, date, tüketimVerisi, result, musteri, faturaTürü):
+    if (date is None or tüketimVerisi is None):
         updateQuery = "UPDATE Fatura SET isControl = ? WHERE PDF = ? AND Musteri = ? AND Tür = ?"
-        cursor.execute(updateQuery, (0, result,musteri,faturaTürü))
+        cursor.execute(updateQuery, (0, result, musteri, faturaTürü))
 
         updateQuery = "UPDATE Fatura SET KanıtTüketimVerisi = ? WHERE PDF = ? AND Musteri = ? AND Tür = ?"
         cursor.execute(updateQuery, ("0", result, musteri, faturaTürü))
@@ -130,36 +126,36 @@ def updateDB(cursor, connectionDB, date, tüketimVerisi,result,musteri,faturaTü
 
         if faturaTürü == "E":
             updateQuery = "UPDATE Fatura SET KanıtTüketimVerisi = ? WHERE Ay = ? AND Yıl = ? AND Musteri = ? AND Tür = ?"
-            cursor.execute(updateQuery, (tüketimVerisi, month, year, musteri,faturaTürü))
+            cursor.execute(updateQuery, (tüketimVerisi, month, year, musteri, faturaTürü))
 
             updateQuery = "UPDATE Fatura SET DurumKontrol = ? WHERE Ay = ? AND Yıl = ? AND Musteri = ? AND Tür = ?"
-            cursor.execute(updateQuery, ("Elektrik Faturası Güncelleme Başarılı.", month, year, musteri,faturaTürü))
+            cursor.execute(updateQuery, ("Elektrik Faturası Güncelleme Başarılı.", month, year, musteri, faturaTürü))
         elif faturaTürü == "DG":
-
             updateQuery = "UPDATE Fatura SET KanıtTüketimVerisi = ? WHERE Ay = ? AND Yıl = ? AND Musteri = ? AND Tür = ?"
-            cursor.execute(updateQuery, (tüketimVerisi, month, year, musteri,faturaTürü))
+            cursor.execute(updateQuery, (tüketimVerisi, month, year, musteri, faturaTürü))
 
             updateQuery = "UPDATE Fatura SET DurumKontrol = ? WHERE Ay = ? AND Yıl = ? AND Musteri = ? AND Tür = ?"
-            cursor.execute(updateQuery, ("Doğalgaz Faturası Güncelleme Başarılı.", month, year, musteri,faturaTürü))
+            cursor.execute(updateQuery, ("Doğalgaz Faturası Güncelleme Başarılı.", month, year, musteri, faturaTürü))
 
         connectionDB.commit()
+
 class PDFProcessingApp:
-    def __init__(self, root, database_path, tesseract_cmd):
+    def __init__(self, root, config):
         self.root = root
         self.root.title("ADASO Fatura İşleme Uygulaması")
         self.root.geometry("500x500")
+        self.config = config
 
         # Arkaplan resmini ekleyin
         self.image = Image.open("adaso.jpg")
-        self.resized_image = self.image.resize((500,500))
+        self.resized_image = self.image.resize((500, 500))
         self.converted_image = self.resized_image.convert("RGBA")
-        self.final_image = self.adjust_opacity(self.converted_image,0.3)
+        self.final_image = self.adjust_opacity(self.converted_image, 0.3)
         self.background_image = ImageTk.PhotoImage(self.final_image)
         self.background_label = tk.Label(root, image=self.background_image)
         self.background_label.place(relwidth=1, relheight=1)
 
-        self.database_path = database_path
-        self.tesseract_cmd = tesseract_cmd
+        self.tesseract_cmd = config['tesseract_cmd']
         self.processing = False
 
         self.total_islem_sayisi = 0
@@ -167,24 +163,24 @@ class PDFProcessingApp:
         self.kalan_islem_sayisi = 0
 
         # Yeşil başla butonu
-        self.basla_button = tk.Button(root, text="Başla", command=self.basla_islem, font=('Times', 14),width=7,height=1)
-        self.basla_button.configure(background='green', foreground='white',activebackground='white')
+        self.basla_button = tk.Button(root, text="Başla", command=self.basla_islem, font=('Times', 14), width=7, height=1)
+        self.basla_button.configure(background='green', foreground='white', activebackground='white')
 
         # Sarı durdur butonu
-        self.dur_button = tk.Button(root, text="Durdur", command=self.dur_islem, font=('Times', 14),width=6,height=1)
+        self.dur_button = tk.Button(root, text="Durdur", command=self.dur_islem, font=('Times', 14), width=6, height=1)
         self.dur_button.configure(background='orange', foreground='white')
 
         # Kırmızı kapat butonu
-        self.kapat_button = tk.Button(root, text="Kapat", command=self.kapat, font=('Times', 14),width=6,height=1)
+        self.kapat_button = tk.Button(root, text="Kapat", command=self.kapat, font=('Times', 14), width=6, height=1)
         self.kapat_button.configure(background='red', foreground='white')
 
-        self.total_islem_label = tk.Label(root, text=f"İşlenecek Veri Sayısı: {self.total_islem_sayisi}",font=('Times', 12, 'bold'))
-        self.yapilan_islem_label = tk.Label(root, text=f"Yapılan İşlem Sayısı: {self.yapilan_islem_sayisi}", font=('Times', 12,'bold'))
-        self.kalan_islem_label = tk.Label(root, text=f"Kalan İşlem Sayısı: {self.kalan_islem_sayisi}", font=('Times', 12,'bold'))
+        self.total_islem_label = tk.Label(root, text=f"İşlenecek Veri Sayısı: {self.total_islem_sayisi}", font=('Times', 12, 'bold'))
+        self.yapilan_islem_label = tk.Label(root, text=f"Yapılan İşlem Sayısı: {self.yapilan_islem_sayisi}", font=('Times', 12, 'bold'))
+        self.kalan_islem_label = tk.Label(root, text=f"Kalan İşlem Sayısı: {self.kalan_islem_sayisi}", font=('Times', 12, 'bold'))
 
-        self.basla_button.pack(side='left',pady=(0,420),padx=(150,0))
-        self.dur_button.pack(side='left',pady=(0,420))
-        self.kapat_button.pack(side='left',pady=(0,420))
+        self.basla_button.pack(side='left', pady=(0, 420), padx=(150, 0))
+        self.dur_button.pack(side='left', pady=(0, 420))
+        self.kapat_button.pack(side='left', pady=(0, 420))
 
         self.total_islem_label.place(relx=0.5, rely=0.87, anchor='center')
         self.yapilan_islem_label.place(relx=0.5, rely=0.92, anchor='center')
@@ -196,12 +192,14 @@ class PDFProcessingApp:
         alpha = alpha.point(lambda p: p * opacity)
         image.putalpha(alpha)
         return image
+
     def guncelle_labels(self):
         self.total_islem_label.config(text=f"Toplam İşlem Sayısı: {self.total_islem_sayisi}")
         self.yapilan_islem_label.config(text=f"Yapılan İşlem Sayısı: {self.yapilan_islem_sayisi}")
         self.kalan_islem_label.config(text=f"Kalan İşlem Sayısı: {self.kalan_islem_sayisi}")
         if not self.processing:
             messagebox.showinfo("INFO", "İşlem durduruldu. Tekrar başlatmak için 'Başlat' butonuna basınız.")
+
     def basla_islem(self):
         if not self.processing:
             self.processing = True
@@ -213,17 +211,23 @@ class PDFProcessingApp:
         if self.processing:
             messagebox.showinfo("INFO", "İşlem sürüyor. İşlem tamamlandığında program duracaktır.")
             self.processing = False
+
     def kapat(self):
         if self.processing:
             messagebox.showerror("INFO", "Lütfen işlem tamamlanmadan kapatmayın.")
         else:
             self.root.destroy()
 
-    # Geri kalan kodunuzu buraya ekleyin (main fonksiyonunu buraya taşıdım)
-
     def main(self):
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-        cursor, connectionDB = connectDB(self.database_path)
+        pytesseract.pytesseract.tesseract_cmd = self.tesseract_cmd
+        connectionDB = pyodbc.connect(
+            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+            f"SERVER={self.config['server']};"
+            f"DATABASE={self.config['database']};"
+            f"UID={self.config['username']};"
+            f"PWD={self.config['password']};"
+        )
+        cursor = connectionDB.cursor()
         resultsOfPDF = isControlCheck(cursor)
 
         self.total_islem_sayisi = len(resultsOfPDF)
@@ -235,20 +239,22 @@ class PDFProcessingApp:
             messagebox.showinfo("INFO", "İşlem başlatılamadı. İşlenecek bir veri bulunamadı.")
 
         for result in resultsOfPDF:
+
+
             if not self.processing:
                 break
 
             try:
                 dataArray = processPDF(result[0])
-                musteriIsim = result[1]
-                faturaTürü = result[2]
+                Id = result[1]
+                CompanyId = result[2]
 
                 if not dataArray:
-                    updateDB(cursor, connectionDB, None, None, result[0], musteriIsim, faturaTürü)
+                    updateDB(cursor, connectionDB, None, None, result[0], Id, CompanyId)
                 else:
                     date = dataArray[0]
                     tüketimVerisi = dataArray[-1]
-                    updateDB(cursor, connectionDB, date, tüketimVerisi, None, musteriIsim, faturaTürü)
+                    updateDB(cursor, connectionDB, date, tüketimVerisi, None, Id, CompanyId)
 
                 self.yapilan_islem_sayisi += 1
                 self.kalan_islem_sayisi -= 1
@@ -262,11 +268,8 @@ class PDFProcessingApp:
 
 if __name__ == '__main__':
     root = tk.Tk()
-    root.iconbitmap(default="adaso.ico")
+    root.iconbitmap(default="adasoo.ico")
     config = load_config('config.json')
 
-    database_path = config['database_path']
-    tesseract_cmd = config['tesseract_cmd']
-
-    app = PDFProcessingApp(root, database_path, tesseract_cmd)
+    app = PDFProcessingApp(root, config)
     root.mainloop()
